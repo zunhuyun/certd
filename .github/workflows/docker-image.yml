@@ -1,0 +1,64 @@
+name: build-image
+on:
+  push:
+    branches: ['v2']  # 当推送到 v2 分支时触发
+    paths:
+      - "build.trigger"  # 当这个文件路径发生变化时触发
+
+# 如果需要每天定时执行，取消下面的注释并设置你想要的时间
+# schedule:
+#   - cron: '17 19 * * *' # 调整为你所需的时间（UTC 时间）
+
+permissions:
+  contents: read  # 只读权限
+
+jobs:
+  build-certd-image:
+    runs-on: ubuntu-latest  # 使用最新的 Ubuntu 环境
+    steps:
+      - name: Checkout Code  # 检出代码
+        uses: actions/checkout@v4
+
+      - name: 获取 certd 版本号
+        id: get_certd_version
+        uses: actions/github-script@v6
+        with:
+          result-encoding: string
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const pnpmWorkspace = "./pnpm-workspace.yaml";
+            fs.unlinkSync(pnpmWorkspace)
+            const jsonFilePath = "./packages/ui/certd-server/package.json";
+            const jsonContent = fs.readFileSync(jsonFilePath, 'utf-8');
+            const pkg = JSON.parse(jsonContent)
+            console.log("certd_version:",pkg.version);
+            return pkg.version  # 读取并返回 package.json 中的版本号
+
+      - run: |
+          npm install -g pnpm  # 全局安装 pnpm
+          pnpm install  # 安装依赖
+          npm run build  # 构建项目
+        working-directory: ./packages/ui/certd-client
+
+      - name: Set up QEMU  # 设置 QEMU 以支持多架构构建
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx  # 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}  # 使用 GitHub Secrets 中的 Docker Hub 用户名
+          password: ${{ secrets.DOCKER_PASSWORD }}  # 使用 GitHub Secrets 中的 Docker Hub 密码
+
+      - name: Build and push  # 构建并推送 Docker 镜像
+        uses: docker/build-push-action@v6.5.0
+        with:
+          platforms: linux/amd64,linux/arm64  # 构建多架构镜像
+          push: true  # 推送到注册表
+          context: ./packages/ui/  # Docker 上下文
+          tags: |
+            ${DOCKER_USERNAME}/certd:latest
+            ${DOCKER_USERNAME}/certd:${{steps.get_certd_version.outputs.result}}  # 使用获取的版本号作为标签
